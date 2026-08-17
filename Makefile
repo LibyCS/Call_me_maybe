@@ -8,7 +8,7 @@ debug: install
 	uv run python3 -m pdb -m src 
 
 clean:
-	rm -rf __pycache__ .mypy_cache
+	rm -rf __pycache__ src/__pycache__ .mypy_cache
 
 lint:
 	uv run flake8 .

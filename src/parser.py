@@ -45,7 +45,7 @@ class FunctonDefinition(BaseModel):
                                       "Too many fields were given")
         return data
     @model_validator(mode="after")
-    def validate_name(self) -> FunctonDefinition:
+    def validate_name(self) -> "FunctonDefinition":
         if " " in self.name or "-" in self.name or "." in self.name:
             raise PydanticCustomError("invalid_name",
                                       "Function name cannot have any of the"
