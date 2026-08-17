@@ -1,6 +1,6 @@
 import json
 import argparse
-from .definition_parser import load_file
+from .parser import load_definition, load_prompts
 
 def main() -> int:
     main_parser = argparse.ArgumentParser()
@@ -11,5 +11,9 @@ def main() -> int:
     main_parser.add_argument("--output", default="data/output/"
                              "function_calls.json")
     args = main_parser.parse_args()
-    load_file(args.functions_definition)
+    try:
+        function_defs = load_definition(args.functions_definition)
+        prompts = load_prompts(args.input)
+    except (ValueError, TypeError) as message:
+        print(message)
     return 0
