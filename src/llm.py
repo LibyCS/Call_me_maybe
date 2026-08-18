@@ -72,6 +72,9 @@ class ConstrainedDecoding():
     def search_and_invalidate(self, logits: list[float], target: int) -> None:
         return
 
+    def prompt_formation(self) -> None:
+        return
+
 class LLMProcessing():
     """
     Class that handles the llm processes such as encoding, fetching logits,
@@ -115,9 +118,11 @@ class LLMProcessing():
         if len(logits) == 0:
             raise ValueError("Error: No tokens were found")
         logits_array = zip(range(len(logits)), logits)
-        ordered_logits = sorted(logits_array, key=lamdba pair: pair[1],
+        print("sorting")
+        ordered_logits = sorted(logits_array, key=lambda pair: pair[1],
                                 reverse=True)
-        best_token_id = ordered_logits[0][1]
+        print("done sorting")
+        best_token_id = ordered_logits[0][0]
         return best_token_id
 
     def token_id_to_text(self, token_ids = list[int]) -> str:
@@ -145,7 +150,7 @@ class LLMProcessing():
             if self.token_id_to_token[next_token_id] == "}":
                 break
             i += 1
-            if i == 50:
+            if i == 30:
                 break
         print("\nLLM response:")
         print(self.llm.decode(self.encoded_ouput))
