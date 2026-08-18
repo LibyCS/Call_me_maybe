@@ -4,6 +4,11 @@ from .parser import load_definition, load_prompts
 from .llm import LLMProcessing
 
 def main() -> int:
+    """
+    Main function that calls each neccsary function to run the program.
+    Only accepts 3 other arguments if required otherwise default arguments
+    are used.
+    """
     main_parser = argparse.ArgumentParser()
     main_parser.add_argument("--functions_definition",
                              default="data/input/functions_definition.json")
@@ -21,3 +26,6 @@ def main() -> int:
     except (ValueError, TypeError) as message:
         print(message)
     return 0
+
+if __name__ == "__main__":
+    main()
