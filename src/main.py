@@ -1,7 +1,7 @@
 import json
 import argparse
 from .parser import load_definition, load_prompts
-from .llm import llm_processing
+from .llm import LLMProcessing
 
 def main() -> int:
     main_parser = argparse.ArgumentParser()
@@ -16,7 +16,7 @@ def main() -> int:
         function_defs = load_definition(args.functions_definition)
         prompts = load_prompts(args.input)
         print(prompts[0])
-        llm = llm_processing(prompts, function_defs)
+        llm = LLMProcessing(prompts, function_defs)
         llm.prompt_process()
     except (ValueError, TypeError) as message:
         print(message)

@@ -4,7 +4,7 @@ from collections.abc import Generator
 import json
 
 
-class engeneer_text_format():
+class EngeneerTextFormat():
     def __init__(self, functions: list[FunctonDefinition]):
         self.intro = ("I want you to choose the appropriate function based off"
                       " the user prompt from a set of functions and return it "
@@ -43,13 +43,19 @@ class engeneer_text_format():
         user = self.user_prompt.format(text=prompt)
         llm_prompt = (self.intro + self.func_exp + user + self.format)
         return llm_prompt
-        
-class llm_processing():
+
+class ConstrainedDecoding():
+    def __init__(self) -> None:
+        return
+
+    def search_and_invalidate(self, logits: list[float], target: int) -> None:
+        return
+class LLMProcessing():
     def __init__(self, prompts: list[str], functions: list[FunctonDefinition]):
         self.llm = Small_LLM_Model()
         self.prompts = prompts
         self.create_token_to_token_id_dict()
-        eng_text = engeneer_text_format(functions)
+        eng_text = EngeneerTextFormat(functions)
         self.engeneered_text = eng_text.create_llm_prompt
         self.encoded_ouput: list[int] = []
 
@@ -68,10 +74,10 @@ class llm_processing():
         logits = self.llm.get_logits_from_input_ids(self.encoded)
         if len(logits) == 0:
             raise ValueError("Error: No tokens were found")
-        best_token_id = 0
-        for token_id in range(0, len(logits)):
-            if logits[token_id] > logits[best_token_id]:
-                best_token_id = token_id
+        logits_array = zip(range(len(logits)), logits)
+        ordered_logits = sorted(logits_array, key=lamdba pair: pair[1],
+                                reverse=True)
+        best_token_id = ordered_logits[0][1]
         return best_token_id
 
     def token_id_to_text(self) -> str:
@@ -79,9 +85,6 @@ class llm_processing():
         for token_id in self.encoded:
             text += self.token_id_to_token[token_id]
         return text
-
-    def constrained_decoding(self) -> None:
-        return
 
     def prompt_process(self) -> None:
         encoded_gen = self.encode_text_gen()
