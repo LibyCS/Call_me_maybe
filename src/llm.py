@@ -4,7 +4,13 @@ from collections.abc import Generator
 import numpy as np
 import json
 import sys
+from enum import StrEnum
 
+class Key(StrEnum):
+    PROMPT = '"prompt":'
+    NAME = '"name":'
+    FUNCS = 'function_name'
+    PARAM = '"parameters":'
 
 class EngeneerTextFormat():
     """
@@ -73,103 +79,137 @@ class ConstrainedDecoding():
                  functions: list[FunctonDefinition]) -> None:
         self.functions: list[FunctonDefinition] = functions
         self.token_dict = token_dictionary
-        self.target_words = ['{', '"prompt":', '"name":', '"parameters":', '}']
-        self.prompt = ""
+        self.prompt: str = ""
+        self.prediction: str = "{"
+        self.prdedicition_construction()
 
-    def set_invalids_to_infinity(self, logits: list[float]) -> list[float]:
+    def prdedicition_construction(self) -> None:
+        self.prediction += f'{Key.PROMPT} <name>' + ','
+        self.prediction += f'{Key.NAME} <function>' + ','
+        self.prediction += f'{Key.PARAM} <parameters>' + '}'
+        self.prediction = self.prediction.replace(" ", "Ġ")
+        print(self.prediction)
+
+    def update_prompt(self, prompt: str) -> None:
+        print("updating prompt")
+        self.prompt = prompt.replace(" ", "Ġ")
+        self.prediction = self.prediction.replace("<name>", self.prompt)
+        print(self.prediction)
+
+    def set_invalids_to_infinity(self, logits: list[float],
+                                 valid_token_ids: list[int]) -> list[float]:
         useful_logits: list[float] = []
-        for token_id in self.useful_token_ids:
+        for token_id in valid_token_ids:
             useful_logits.append(logits[token_id])
         corrected_logits = [float("-inf")] * len(logits)
         index = 0
-        for token_id in self.useful_token_ids:
+        for token_id in valid_token_ids:
             corrected_logits[token_id] = useful_logits[index]
             index += 1
         return corrected_logits
 
-    def find_useful_token_ids(self, target_list: list[str]) -> None:
-        self.useful_token_ids: list[int] = []
+    def convert_token_to_id(self, target_list: list[str]) -> list[int]:
+        useful_token_ids: list[int] = []
         for target in target_list:
-            for token_id in self.token_dict[target].values():
-                self.useful_token_ids.append(token_id)
-        if len(self.useful_token_ids) == 0:
+            useful_token_ids.append(self.token_dict[target[0]][target])
+        if len(useful_token_ids) == 0:
             raise ValueError("Error: No valid tokens were found.")
+        print("token_ids:", useful_token_ids)
+        return useful_token_ids
 
-    def find_diff_in_words(self, target_word: str, output: str) -> str:
-        print("finding the difference, target word is ", target_word)
-        for letter in target_word:
-            if output.find(letter) != -1:
-                continue
-            print(letter, "letter not found")
-            return letter
-        print("No difference found")
-        return ""
-
-    def check_value_completed(self, line: str) -> list[str]:
-        diff: list[str] = []
-        if ":" not in line:
-            return [":"]
-        for type, value in line.split(":"):
-            if type == self.target_words[0]:
-                diff.append(self.find_diff_in_words(self.prompt, value))
-            elif type == self.target_words[1]:
-                for func in self.functions.name:
-                    diff.append(self.find_diff_in_words(func, value))
-        if "" in diff:
-            diff = []
-        return diff
-
-    def json_commas(self, line: str) -> bool:
-        if "," not in line and ("prompt" in line or "name" in line):
-            return False
-        return True
-
-    def predict_target_tokens(self, current_output: str, prompt: str) -> int:
-        if self.prompt != prompt:
-            self.prompt = prompt
-        target_bucket: list[str] = []
-        lines: list[str] = []
-        if "{" in current_output:
-            lines = ["{"]
-            current_output = current_output.replace("{", "", 1)
-        lines = lines + list(current_output.split(","))
-        print("Current lines", lines)
+    def find_diff_in_words(self, target_word: str, string: str) -> tuple[str, int]:
+        #print("finding the difference, target word is ", target_word)
+        partially_constructed = ""
         index = 0
-        for word in self.target_words:
-            print("current word:", word)
-            if word == self.target_words[3] and len(lines) == 3:
-                print("found function, moving to params")
-                _, self.func_name = lines[2].split(":")
-            print("Checking if word is not in lines")
-            if word not in lines[index]:
-                print("Could not find word in line: '", lines[index], "'")
-                target_bucket.append(self.find_diff_in_words(word, lines[index]))
-                break
-            elif word in lines[index] and word != "{":
-                difference = self.check_value_completed(lines[index])[0]
-                print("Found word and checking difference", difference)
-                if difference:
-                    target_bucket = difference
-                    break
-            if self.json_commas == True or word == "{" or word == "}":
+        for letter in target_word:
+            partially_constructed += letter
+            if string.find(partially_constructed) != -1:
                 index += 1
-            else:
-                target_bucket = ","
-                break
-        print("target bucket is", target_bucket)
-        if not target_bucket[0]:
-            print("Found everything needed, now exiting")
-            return 1
-        print("finding the useful token_ids")
-        self.find_useful_token_ids(target_bucket)
-        return 0
+                continue
+            #print(letter, "letter not found")
+            return (letter, index)
+        print("No difference found")
+        return ()
 
-    def correct_logits(self, logits: list[float], cur_output: str,
-                       cur_prompt: str ) -> list[float]:
+    def find_valid_function_token_ids(self, bucket: tuple[str, int], output: str) -> list[int]:
+        print("Going into function token ids", bucket)
+        valid_tokens: list[str] = []
+        further_validation_tokens: list[tuple[str, int]] = []
+        predicted_left = self.prediction[(self.prediction.find("<function>") + len("<function>")):]
+        func_names = [func.name for func in self.functions]
+        if bucket[0] != "<":
+            print("found < in the bucket")
+            for token in self.token_dict[bucket[0]]:
+                length = len(token)
+                index_of_temp = output[bucket[1]: bucket[1] + length].find("<")
+                if index_of_temp != -1:
+                    further_validation_tokens.append((token, index_of_temp))
+                elif output.find(token) == 0:
+                    valid_tokens.append(token)
+            for func in func_names:
+                for token, index in further_validation_tokens:
+                    if not self.find_diff_in_words(token, output[bucket[1]: index] + func + predicted_left):
+                        valid_tokens.append(token)
+            return self.convert_token_to_id(valid_tokens)
+        cur_func_output = output[(output.find(Key.NAME) + len(Key.NAME)):].replace("Ġ", "")
+        print("cur_func_out:", cur_func_output)
+        for func in func_names:
+            letter = self.find_diff_in_words(func, cur_func_output)
+            for token in self.token_dict[letter]:
+                if not self.find_diff_in_words(cur_func_output + token, func + predicted_left):
+                    valid_tokens.append(token)
+        return self.convert_token_to_id(valid_tokens)
+
+    def find_valid_token_ids_in_bucket(self, bucket: tuple[str, int], output: str) -> list[int]:
+        valid_tokens : list[int] = []
+        print("Bucket still is", bucket)
+        if bucket[0] not in self.token_dict.keys():
+            raise KeyError(f"Error: No '{bucket[0]}' key in token_dictionary")
+        for token in self.token_dict[bucket[0]]:
+            if self.find_diff_in_words(token, self.prediction[bucket[1]:]) == "<":
+                index = self.prediction[bucket[1]:].find("<")
+                if self.prediction[index:].find("<function>") == 0:
+                    print("sending to function_token_ids")
+                    return self.find_valid_function_token_ids(bucket, output)
+            elif self.prediction[bucket[1]:].find(token) == 0:
+                valid_tokens.append(token)
+        print("valid:")
+        print([token for token in valid_tokens])
+        return self.convert_token_to_id(valid_tokens)
+
+    def find_general_bucket(self, current_output: str) -> (list[int] | None):
+        bucket = self.find_diff_in_words(self.prediction, current_output)
+        if not bucket:
+            print("Nothing in bucket")
+            return None
+        if bucket[0] == "<":
+            print("found < in bucket")
+            if (Key.NAME in current_output
+               and self.prediction.find("<function>") == bucket[1]):
+                found = False
+                for func in self.functions:
+                    if self.prediction[bucket[1]:].find(func.name) == 0:
+                        found = True
+                if found is True:
+                    self.prediction.replace("<function>", func.name)
+                else:
+                    return self.find_valid_function_token_ids(bucket, current_output)
+            elif (Key.PARAM in current_output
+                 and self.prediction.find("<parameters>") == bucket[1]):
+                  """Send to param config"""
+            else:
+                raise ValueError("Error: Could not find name")
+        print("Found bucket", bucket[0])
+        return self.find_valid_token_ids_in_bucket(bucket, current_output)
+
+    def correct_logits(self, logits: list[float], cur_output: str) -> (list[float] | None):
         print("\nNew logits:")
-        if self.predict_target_tokens(cur_output, cur_prompt) == 1:
-            return []
-        return self.set_invalids_to_infinity(logits)
+        print(self.prediction)
+        valid_token_ids = self.find_general_bucket(cur_output.replace(" ", "Ġ"))
+        if valid_token_ids is None:
+            return None
+        print(valid_token_ids)
+        return self.set_invalids_to_infinity(logits, valid_token_ids)
 
 
 class LLMProcessing():
@@ -186,10 +226,10 @@ class LLMProcessing():
         self.prompts = prompts
         self.token_dictionary: dict[str, dict[str, int]] = {}
         self.create_token_to_token_id_dict()
-        eng_text = EngeneerTextFormat(functions)
-        self.engeneered_text = eng_text.create_llm_prompt
         self.const_decode = ConstrainedDecoding(self.token_dictionary,
                                                 functions)
+        eng_text = EngeneerTextFormat(functions)
+        self.engeneered_text = eng_text.create_llm_prompt
         self.encoded_output: list[int] = []
 
     def create_token_to_token_id_dict(self) -> None:
@@ -209,7 +249,7 @@ class LLMProcessing():
         """
         for text in self.prompts:
             llm_text = self.engeneered_text(text)
-            self.cur_prompt = text
+            self.const_decode.update_prompt(text)
             print(llm_text)
             yield self.llm.encode(llm_text).tolist()[0]
 
@@ -221,10 +261,9 @@ class LLMProcessing():
         if len(logits) == 0:
             raise ValueError("Error: No tokens were found")
         output = self.llm.decode(self.encoded_output)
-        print("current output", output)
-        cor_logits = self.const_decode.correct_logits(logits, output,
-                                                      self.cur_prompt)
-        if not cor_logits:
+        print(f"current output '{output}'")
+        cor_logits = self.const_decode.correct_logits(logits, output)
+        if cor_logits is None:
             return -1
         best_token_id = int(np.argmax(cor_logits))
         return best_token_id
@@ -239,12 +278,15 @@ class LLMProcessing():
         self.encoded = next(encoded_gen)
         i = 0
         while True:
+            print("Choosing next token round:", i)
             next_token_id = self.token_selection()
             if next_token_id == -1:
                 break
             self.encoded.append(next_token_id)
+            print(f"LLM has chosen: '{self.llm.decode(next_token_id)}'")
             self.encoded_output.append(next_token_id)
             i += 1
-            if i == 30:
+            if i == 25:
                 break
         print("\nLLM response:")
+        print(f"'{self.llm.decode(self.encoded_output)}'")

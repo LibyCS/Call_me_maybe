@@ -23,7 +23,7 @@ def main() -> int:
         print(prompts[0])
         llm = LLMProcessing(prompts, function_defs)
         llm.prompt_process()
-    except (ValueError, TypeError) as message:
+    except (ValueError, TypeError, KeyError) as message:
         print(message)
     return 0
 
