@@ -11,7 +11,7 @@ class ParameterDefinition(BaseModel):
 
     type: Literal['string', 'number']
     """
-    type: Literal["string", "number"]
+    type: Literal["string", "number", "boolean", "integer", "array", "null"]
 
     @model_validator(mode="before")
     @classmethod

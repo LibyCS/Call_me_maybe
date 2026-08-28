@@ -24,7 +24,8 @@ class EngeneerTextFormat():
         self.intro = ("I want you to choose the appropriate function based off"
                       " the user prompt from a set of functions and return it "
                       "in json format, I will provide the function's name, "
-                      "paramaters and description.\n\n")
+                      "paramaters and description. If there is no valid"
+                      " function return 'none'\n\n")
         self.all_funcs = functions
         self.func_exp = ""
         self.functions_format()
@@ -82,6 +83,7 @@ class ConstrainedDecoding():
         self.prompt: str = ""
         self.prediction: str = "{"
         self.prdedicition_construction()
+        self.param_mode = False
 
     def prdedicition_construction(self) -> None:
         self.prediction += f'{Key.PROMPT} <name>' + ','
@@ -95,6 +97,19 @@ class ConstrainedDecoding():
         self.prompt = prompt.replace(" ", "Ġ")
         self.prediction = self.prediction.replace("<name>", self.prompt)
         print(self.prediction)
+
+    def update_paramaters(self, func: FunctonDefinition) -> None:
+        parameter = func.parameters
+        param_str = "{"
+        index = 0
+        for variable in parameter.keys():
+            param_str += '"' + variable + '": '
+            param_str += "<" + parameter[variable].type + ">"
+            index += 1
+            if index != len(parameter.keys()):
+                param_str += ", "
+        param_str += "}"
+        self.prediction = self.prediction.replace("<parameter>", param_str)
 
     def set_invalids_to_infinity(self, logits: list[float],
                                  valid_token_ids: list[int]) -> list[float]:
@@ -118,7 +133,6 @@ class ConstrainedDecoding():
         return useful_token_ids
 
     def find_diff_in_words(self, target_word: str, string: str) -> tuple[str, int]:
-        #print("finding the difference, target word is ", target_word)
         partially_constructed = ""
         index = 0
         for letter in target_word:
@@ -126,38 +140,104 @@ class ConstrainedDecoding():
             if string.find(partially_constructed) != -1:
                 index += 1
                 continue
-            #print(letter, "letter not found")
             return (letter, index)
-        print("No difference found")
         return ()
 
-    def find_valid_function_token_ids(self, bucket: tuple[str, int], output: str) -> list[int]:
-        print("Going into function token ids", bucket)
+    def find_valid_function_token_ids(self, output: str) -> list[int]:
+        bucket: list[str] = []
         valid_tokens: list[str] = []
-        further_validation_tokens: list[tuple[str, int]] = []
-        predicted_left = self.prediction[(self.prediction.find("<function>") + len("<function>")):]
-        func_names = [func.name for func in self.functions]
-        if bucket[0] != "<":
-            print("found < in the bucket")
+        names = [func.name for func in self.functions]
+        limit_output = output[self.prediction.find("<function>"):]
+        highest_index = 0
+        best_matches: list[str] = []
+        for name in names:
+            print(limit_output, name)
+            difference = self.find_diff_in_words(name, limit_output)
+            if difference is None:
+                print("Found function already")
+                return
+            new_index = difference[1]
+            if new_index == highest_index:
+                best_matches.append(name)
+            elif new_index > highest_index:
+                highest_index = new_index
+                best_matches = [name]
+        prediction_start = output.find(Key.NAME)
+        print(best_matches)
+        for func in best_matches:
+            potential_predicted = self.prediction[prediction_start:].replace("<function>", func)
+            letter, _ = self.find_diff_in_words(potential_predicted, output[prediction_start:])
+            bucket.append(letter)
+        for tokens in bucket:
+            for token in self.token_dict[tokens]:
+                if not self.find_diff_in_words(token, potential_predicted):
+                    valid_tokens.append(token)
+        return self.convert_token_to_id(valid_tokens)
+
+    def find_type(self, value: str, ch_type: type) -> bool:
+        if ch_type == "<number>":
+            func = float
+        elif ch_type == "<string>":
+            func = str
+        elif ch_type == "<boolean>":
+            func = bool
+        else:
+            func = int
+        try:
+            func(value)
+        except ValueError:
+            return False
+        return True
+
+    def finding_param_tokens(self, ch_type: str) -> list[str]:
+        preliminary: list[str] = []
+        valid: list[str] = ['"']
+        for bucket in self.token_dict.keys():
+            if self.find_type(bucket, ch_type) is True:
+                valid.append(bucket)
+        for bucket in preliminary:
+            for token in self.token_dict[bucket]:
+                if self.find_type(token, ch_type) is True:
+                    valid.append(token)
+        return valid
+
+    def find_param_index(self, output: str) -> int:
+        if output.find(Key.PARAM) == -1:
+            return len(output)
+        param_index = output.find(Key.PARAM) + len(Key.PARAM)
+        output = output[param_index:]
+        num_params = self.prediction[param_index:].count(":")
+        for i in range(1, num_params + 1):
+            if output.find(Key.PARAM) != -1 and output.count('"') <= 1:
+                return param_index
+            else:
+                param_index += output.find('",')
+                output = output[output.find('",')]
+        return param_index
+
+    def find_valid_param_token_ids(self, output: str) -> list[int]:
+        valid_tokens: list[str] = []
+        param_index = self.find_param_index(output)
+        param_predict = self.prediction[param_index:]
+        bucket = self.find_diff_in_words(param_predict, output[param_index:])
+        ch_type = param_predict[param_predict.find("<"): param_predict.find(">")]
+        if bucket is None or ch_type == -1:
+            return
+        elif bucket[0] != "<":
             for token in self.token_dict[bucket[0]]:
-                length = len(token)
-                index_of_temp = output[bucket[1]: bucket[1] + length].find("<")
-                if index_of_temp != -1:
-                    further_validation_tokens.append((token, index_of_temp))
-                elif output.find(token) == 0:
+                diff = self.find_diff_in_words(token, param_predict)
+                if diff is None:
                     valid_tokens.append(token)
-            for func in func_names:
-                for token, index in further_validation_tokens:
-                    if not self.find_diff_in_words(token, output[bucket[1]: index] + func + predicted_left):
-                        valid_tokens.append(token)
-            return self.convert_token_to_id(valid_tokens)
-        cur_func_output = output[(output.find(Key.NAME) + len(Key.NAME)):].replace("Ġ", "")
-        print("cur_func_out:", cur_func_output)
-        for func in func_names:
-            letter = self.find_diff_in_words(func, cur_func_output)
-            for token in self.token_dict[letter]:
-                if not self.find_diff_in_words(cur_func_output + token, func + predicted_left):
+                elif diff[0] == "<":
+                    index = diff[1]
                     valid_tokens.append(token)
+                    for letter in token[index:]:
+                        if index == len(token) - 1 and letter == "":
+                            break
+                        elif self.find_type(letter, ch_type) is False:
+                            valid_tokens.remove(token)
+                        index += 1
+        valid_tokens += self.finding_param_tokens(ch_type)
         return self.convert_token_to_id(valid_tokens)
 
     def find_valid_token_ids_in_bucket(self, bucket: tuple[str, int], output: str) -> list[int]:
@@ -170,7 +250,10 @@ class ConstrainedDecoding():
                 index = self.prediction[bucket[1]:].find("<")
                 if self.prediction[index:].find("<function>") == 0:
                     print("sending to function_token_ids")
-                    return self.find_valid_function_token_ids(bucket, output)
+                    return self.find_valid_function_token_ids(output)
+                elif self.prediction[index:].find("<parameters>") == 0:
+                    print("sending to paramater_token_ids")
+                    return self.find_valid_param_token_ids(output)
             elif self.prediction[bucket[1]:].find(token) == 0:
                 valid_tokens.append(token)
         print("valid:")
@@ -187,16 +270,23 @@ class ConstrainedDecoding():
             if (Key.NAME in current_output
                and self.prediction.find("<function>") == bucket[1]):
                 found = False
+                print("Its a function")
                 for func in self.functions:
-                    if self.prediction[bucket[1]:].find(func.name) == 0:
+                    if current_output[bucket[1]:].find(func.name) == 0:
+                        print("found the completed function")
                         found = True
                 if found is True:
-                    self.prediction.replace("<function>", func.name)
+                    self.prediction = self.prediction.replace("<function>", func.name)
+                    self.update_paramaters(func)
+                    print(self.prediction)
+                    bucket = self.find_diff_in_words(self.prediction, current_output)
+                    self.param_mode = True
                 else:
-                    return self.find_valid_function_token_ids(bucket, current_output)
-            elif (Key.PARAM in current_output
-                 and self.prediction.find("<parameters>") == bucket[1]):
-                  """Send to param config"""
+                    print("Did not find function in output so sending it to function_id")
+                    return self.find_valid_function_token_ids(current_output)
+            elif (Key.PARAM in current_output and self.param_mode is True):
+                  print("its a param")
+                  return self.find_valid_param_token_ids(current_output)   
             else:
                 raise ValueError("Error: Could not find name")
         print("Found bucket", bucket[0])
@@ -208,7 +298,6 @@ class ConstrainedDecoding():
         valid_token_ids = self.find_general_bucket(cur_output.replace(" ", "Ġ"))
         if valid_token_ids is None:
             return None
-        print(valid_token_ids)
         return self.set_invalids_to_infinity(logits, valid_token_ids)
 
 
@@ -286,7 +375,7 @@ class LLMProcessing():
             print(f"LLM has chosen: '{self.llm.decode(next_token_id)}'")
             self.encoded_output.append(next_token_id)
             i += 1
-            if i == 25:
+            if i == 40:
                 break
         print("\nLLM response:")
         print(f"'{self.llm.decode(self.encoded_output)}'")
