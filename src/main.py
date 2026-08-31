@@ -18,11 +18,15 @@ def main() -> int:
                              "function_calls.json")
     args = main_parser.parse_args()
     try:
+        print("Loading prompts")
         function_defs = load_definition(args.functions_definition)
         prompts = load_prompts(args.input)
         print(prompts[0])
+        print("Creating the llm processor")
         llm = LLMProcessing(prompts, function_defs)
-        llm.prompt_process()
+        print("Finshed loading the llm processor")
+        print("Starting all prompt processor")
+        llm.all_prompt_process()
     except (ValueError, TypeError, KeyError) as message:
         print(message)
     return 0

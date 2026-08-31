@@ -7,10 +7,9 @@ import sys
 from enum import StrEnum
 
 class Key(StrEnum):
-    PROMPT = '"prompt":'
-    NAME = '"name":'
-    FUNCS = 'function_name'
-    PARAM = '"parameters":'
+    PROMPT = '"prompt":Ġ'
+    NAME = ',Ġ"name":Ġ'
+    PARAM = ',Ġ"parameters":Ġ'
 
 class EngeneerTextFormat():
     """
@@ -21,22 +20,19 @@ class EngeneerTextFormat():
         """
         Sets needed class variables to format the prompt sent to the llm
         """
-        self.intro = ("I want you to choose the appropriate function based off"
-                      " the user prompt from a set of functions and return it "
-                      "in json format, I will provide the function's name, "
-                      "paramaters and description. If there is no valid"
-                      " function return 'none'\n\n")
         self.all_funcs = functions
-        self.func_exp = ""
-        self.functions_format()
         self.user_prompt = "User prompt: {text}\n\n"
-        self.format = ("Please return your answer in json format "
-                       "formated as:\n\"prompt\": (user prompt),\n"
-                       "\"name\": (function name),\n\"parameters\""
-                       ": {(parameter key): (parameter value)...} "
-                       "and nothing else.")
 
-    def parameters_format(self, func: FunctonDefinition) -> str:
+    def prompt_format(self, prompt: str) -> str:
+        """
+        Asks the llm to return the prompt in a valid json format
+        """
+        prompt_llm = ("I will provide you with a user prompt, and I want"
+                     " it formatted as such: '\"prompt\": \"(user prompt)\",'"
+                     "where user prompt is replaced with the prompt given")
+        return prompt_llm + self.user_prompt.replace("text", prompt)
+
+    def llm_parameters(self, func: FunctonDefinition) -> str:
         """
         Formats the paramaters so that they are readable and understandable.
         """
@@ -52,23 +48,35 @@ class EngeneerTextFormat():
             i += 1
         return parameters.format(text=variables)
 
-    def functions_format(self) -> None:
+    def functions_format(self, prompt: str) -> str:
         """
         Formats the function information to send to the llm.
         """
+        func_intro = ("I will provide you a prompt and a list of functions"
+                      " with their name, description and parameters. From "
+                      "this list of functions choose one that is most "
+                      "suitable for the provided prompt, in this format:"
+                      " ', \"name\": \"(function_name)\",'. If no function is"
+                      " deemed suitable then return ', \"name\": \"None\"'.\n")
+        func_exp: str = ""
         for func in self.all_funcs:
-            self.func_exp += func.name + self.parameters_format(func)
-            self.func_exp += " -> " + func.returns.type + "\n"
-            self.func_exp += func.description + "\n\n"
+            func_exp += func.name + self.llm_parameters(func)
+            func_exp += " -> " + func.returns.type + "\n"
+            func_exp += func.description + "\n\n"
+        return func_intro + func_exp + self.user_prompt.replace("text", prompt)
 
-    def create_llm_prompt(self, prompt: str) -> str:
+    def params_format(self, prompt: str, func: FunctonDefinition) -> str:
         """
-        Adds all neccessary information into one string so that it is now
-        ready to send to the llm.
+        Asks the llm to return the appropriate parameters.
         """
-        user = self.user_prompt.format(text=prompt)
-        llm_prompt = (self.intro + self.func_exp + user + self.format)
-        return llm_prompt
+        llm_request = ("Please use the prompt and the function definition"
+                       " and parameters to make a formated json paramater"
+                       " as shown below:"
+                        "', \"parameters\": {\"(parameter key)\":"
+                        " \"(parameter value)\",...}'")
+        function_des = (func.name + self.llm_parameters(func) + "\n"
+                    + func.description)
+        return llm_request + self.user_prompt.replace("text", prompt) + function_des
 
 
 class ConstrainedDecoding():
@@ -81,20 +89,21 @@ class ConstrainedDecoding():
         self.functions: list[FunctonDefinition] = functions
         self.token_dict = token_dictionary
         self.prompt: str = ""
+        self.output: str = ""
         self.prediction: str = "{"
         self.prdedicition_construction()
         self.param_mode = False
 
     def prdedicition_construction(self) -> None:
-        self.prediction += f'{Key.PROMPT} <name>' + ','
-        self.prediction += f'{Key.NAME} <function>' + ','
-        self.prediction += f'{Key.PARAM} <parameters>' + '}'
+        self.prediction += f'{Key.PROMPT}<name>'
+        self.prediction += f'{Key.NAME}<function>'
+        self.prediction += f'{Key.PARAM}<parameters>' + '}'
         self.prediction = self.prediction.replace(" ", "Ġ")
         print(self.prediction)
 
     def update_prompt(self, prompt: str) -> None:
         print("updating prompt")
-        self.prompt = prompt.replace(" ", "Ġ")
+        self.prompt = '"' + prompt.replace(" ", "Ġ") + '"'
         self.prediction = self.prediction.replace("<name>", self.prompt)
         print(self.prediction)
 
@@ -132,47 +141,26 @@ class ConstrainedDecoding():
         print("token_ids:", useful_token_ids)
         return useful_token_ids
 
-    def find_diff_in_words(self, target_word: str, string: str) -> tuple[str, int]:
+    def find_diff_in_words(self, target_word: str, string: str) -> str:
         partially_constructed = ""
-        index = 0
         for letter in target_word:
             partially_constructed += letter
             if string.find(partially_constructed) != -1:
-                index += 1
                 continue
-            return (letter, index)
-        return ()
+            return letter
+        return ""
 
-    def find_valid_function_token_ids(self, output: str) -> list[int]:
-        bucket: list[str] = []
-        valid_tokens: list[str] = []
-        names = [func.name for func in self.functions]
-        limit_output = output[self.prediction.find("<function>"):]
-        highest_index = 0
-        best_matches: list[str] = []
-        for name in names:
-            print(limit_output, name)
-            difference = self.find_diff_in_words(name, limit_output)
-            if difference is None:
-                print("Found function already")
-                return
-            new_index = difference[1]
-            if new_index == highest_index:
-                best_matches.append(name)
-            elif new_index > highest_index:
-                highest_index = new_index
-                best_matches = [name]
-        prediction_start = output.find(Key.NAME)
-        print(best_matches)
-        for func in best_matches:
-            potential_predicted = self.prediction[prediction_start:].replace("<function>", func)
-            letter, _ = self.find_diff_in_words(potential_predicted, output[prediction_start:])
-            bucket.append(letter)
-        for tokens in bucket:
-            for token in self.token_dict[tokens]:
-                if not self.find_diff_in_words(token, potential_predicted):
-                    valid_tokens.append(token)
-        return self.convert_token_to_id(valid_tokens)
+    def check_func_name(self, output: str, func: (str | None) = None) -> bool:
+        if func is None:
+            for func in self.functions:
+                if output.find(func) != -1:
+                    return True
+            return False
+        if Key.NAME in output:
+            output = output[output.find(Key.NAME) + len(Key.NAME):]
+        if not self.find_diff_in_words(output, func):
+            return True
+        return False
 
     def find_type(self, value: str, ch_type: type) -> bool:
         if ch_type == "<number>":
@@ -189,113 +177,66 @@ class ConstrainedDecoding():
             return False
         return True
 
-    def finding_param_tokens(self, ch_type: str) -> list[str]:
-        preliminary: list[str] = []
-        valid: list[str] = ['"']
-        for bucket in self.token_dict.keys():
-            if self.find_type(bucket, ch_type) is True:
-                valid.append(bucket)
-        for bucket in preliminary:
-            for token in self.token_dict[bucket]:
-                if self.find_type(token, ch_type) is True:
-                    valid.append(token)
-        return valid
-
-    def find_param_index(self, output: str) -> int:
-        if output.find(Key.PARAM) == -1:
-            return len(output)
-        param_index = output.find(Key.PARAM) + len(Key.PARAM)
-        output = output[param_index:]
-        num_params = self.prediction[param_index:].count(":")
-        for i in range(1, num_params + 1):
-            if output.find(Key.PARAM) != -1 and output.count('"') <= 1:
-                return param_index
-            else:
-                param_index += output.find('",')
-                output = output[output.find('",')]
-        return param_index
-
-    def find_valid_param_token_ids(self, output: str) -> list[int]:
+    def find_valid_function_token_ids(self) -> list[int]:
         valid_tokens: list[str] = []
-        param_index = self.find_param_index(output)
-        param_predict = self.prediction[param_index:]
-        bucket = self.find_diff_in_words(param_predict, output[param_index:])
-        ch_type = param_predict[param_predict.find("<"): param_predict.find(">")]
-        if bucket is None or ch_type == -1:
-            return
-        elif bucket[0] != "<":
-            for token in self.token_dict[bucket[0]]:
-                diff = self.find_diff_in_words(token, param_predict)
-                if diff is None:
+        valid_funcs: list[str] = []
+        output = output[output.find(Key.NAME) + len(Key.NAME):]
+        for func in self.functions:
+            if self.check_func_name(self.output, func) is True:
+                valid_funcs.append(func)
+        for func in valid_funcs:
+            bucket = self.find_diff_in_words(func, self.output)
+            for token in self.token_dict[bucket]:
+                if not self.find_diff_in_words(token, self.output):
                     valid_tokens.append(token)
-                elif diff[0] == "<":
-                    index = diff[1]
-                    valid_tokens.append(token)
-                    for letter in token[index:]:
-                        if index == len(token) - 1 and letter == "":
-                            break
-                        elif self.find_type(letter, ch_type) is False:
-                            valid_tokens.remove(token)
-                        index += 1
-        valid_tokens += self.finding_param_tokens(ch_type)
         return self.convert_token_to_id(valid_tokens)
-
-    def find_valid_token_ids_in_bucket(self, bucket: tuple[str, int], output: str) -> list[int]:
+    
+    def find_valid_token_ids_in_bucket(self, bucket: str,
+                                       compare: str) -> list[int]:
         valid_tokens : list[int] = []
         print("Bucket still is", bucket)
-        if bucket[0] not in self.token_dict.keys():
-            raise KeyError(f"Error: No '{bucket[0]}' key in token_dictionary")
-        for token in self.token_dict[bucket[0]]:
-            if self.find_diff_in_words(token, self.prediction[bucket[1]:]) == "<":
-                index = self.prediction[bucket[1]:].find("<")
-                if self.prediction[index:].find("<function>") == 0:
-                    print("sending to function_token_ids")
-                    return self.find_valid_function_token_ids(output)
-                elif self.prediction[index:].find("<parameters>") == 0:
-                    print("sending to paramater_token_ids")
-                    return self.find_valid_param_token_ids(output)
-            elif self.prediction[bucket[1]:].find(token) == 0:
+        print(self.output)
+        if bucket not in self.token_dict.keys():
+            raise KeyError(f"Error: No '{bucket}' key in token_dictionary")
+        for token in self.token_dict[bucket]:
+            if compare.find(self.output + token) != -1:
                 valid_tokens.append(token)
         print("valid:")
         print([token for token in valid_tokens])
         return self.convert_token_to_id(valid_tokens)
 
-    def find_general_bucket(self, current_output: str) -> (list[int] | None):
-        bucket = self.find_diff_in_words(self.prediction, current_output)
-        if not bucket:
-            print("Nothing in bucket")
-            return None
-        if bucket[0] == "<":
-            print("found < in bucket")
-            if (Key.NAME in current_output
-               and self.prediction.find("<function>") == bucket[1]):
-                found = False
-                print("Its a function")
-                for func in self.functions:
-                    if current_output[bucket[1]:].find(func.name) == 0:
-                        print("found the completed function")
-                        found = True
-                if found is True:
-                    self.prediction = self.prediction.replace("<function>", func.name)
-                    self.update_paramaters(func)
-                    print(self.prediction)
-                    bucket = self.find_diff_in_words(self.prediction, current_output)
-                    self.param_mode = True
-                else:
-                    print("Did not find function in output so sending it to function_id")
-                    return self.find_valid_function_token_ids(current_output)
-            elif (Key.PARAM in current_output and self.param_mode is True):
-                  print("its a param")
-                  return self.find_valid_param_token_ids(current_output)   
-            else:
-                raise ValueError("Error: Could not find name")
-        print("Found bucket", bucket[0])
-        return self.find_valid_token_ids_in_bucket(bucket, current_output)
+    def find_bucket(self, output: str) -> tuple[str]:
+        if Key.PROMPT not in output:
+            self.output = output
+            print("Could not find prompt")
+            return (self.find_diff_in_words(Key.PROMPT, output), Key.PROMPT)
+        elif self.prompt not in output:
+            print("before", output)
+            self.output = output[output.find(Key.PROMPT) + len(Key.PROMPT):]
+            print("after", self.output)
+            if self.output.count('"') < 2 and len(self.output) > len(self.prompt):
+                raise ValueError("Error: LLM could not produce the right "
+                                 "prompt")
+            print("could not find prompt value")
+            return (self.find_diff_in_words(self.prompt, self.output), self.prompt)
+        elif Key.NAME not in output:
+            print("Could not find name")
+            self.output = self.output[len(self.prompt):]
+            print(output)
+            return (self.find_diff_in_words(Key.NAME, self.output), Key.NAME)
+        elif self.check_func_name():
+            return ("", "<Function>")
+        elif Key.PARAM not in output:
+            return
 
     def correct_logits(self, logits: list[float], cur_output: str) -> (list[float] | None):
         print("\nNew logits:")
         print(self.prediction)
-        valid_token_ids = self.find_general_bucket(cur_output.replace(" ", "Ġ"))
+        bucket, compare = self.find_bucket(cur_output.replace(" ", "Ġ"))
+        if compare == "<Function>":
+            valid_token_ids = self.find_valid_function_token_ids()
+        else:
+            valid_token_ids = self.find_valid_token_ids_in_bucket(bucket, compare)
         if valid_token_ids is None:
             return None
         return self.set_invalids_to_infinity(logits, valid_token_ids)
@@ -313,13 +254,15 @@ class LLMProcessing():
         """
         self.llm = Small_LLM_Model()
         self.prompts = prompts
+        self.functions = functions
         self.token_dictionary: dict[str, dict[str, int]] = {}
         self.create_token_to_token_id_dict()
         self.const_decode = ConstrainedDecoding(self.token_dictionary,
                                                 functions)
-        eng_text = EngeneerTextFormat(functions)
-        self.engeneered_text = eng_text.create_llm_prompt
-        self.encoded_output: list[int] = []
+        self.eng_text = EngeneerTextFormat(functions)
+        self.encoded: list[int] = []
+        self.output: str = ""
+        self.cur_function : (FunctonDefinition | None) = None
 
     def create_token_to_token_id_dict(self) -> None:
         """
@@ -332,50 +275,71 @@ class LLMProcessing():
                 self.token_dictionary[token[0]] = {}
             self.token_dictionary[token[0]][token] = token_id
 
-    def encode_text_gen(self) -> Generator[list[int], None, None]:
+    def encode_text_gen(self, prompt) -> None:
         """
         Encodes the engeneered text into token ids for the llm to process.
         """
-        for text in self.prompts:
-            llm_text = self.engeneered_text(text)
-            self.const_decode.update_prompt(text)
-            print(llm_text)
-            yield self.llm.encode(llm_text).tolist()[0]
+        request: str = ""
+        if (Key.PROMPT.replace("Ġ", " ") not in self.output
+           or prompt.replace("Ġ", " ") not in self.output):
+            print("prompt request:")
+            request = self.eng_text.prompt_format(prompt)
+        elif (Key.NAME.replace("Ġ", " ") not in self.output
+             or not self.const_decode.check_func_name(self.output)):
+              print("Function request:")
+              request = self.eng_text.functions_format(prompt)
+        else:
+            for func in self.functions:
+                if self.const_decode.check_func_name(self.output, func.name):
+                    self.cur_function = func
+            print("Params request")
+            request = self.eng_text.params_format(prompt, self.cur_function)
+        if request:
+            self.encoded = self.llm.encode(request).tolist()[0]
+            self.encoded += self.llm.encode(self.output).tolist()[0]
 
     def token_selection(self) -> float:
         """
         Chooses best token based off llm's probability and constrained decoding
         """
+        print()
+        print("encoded is:", self.llm.decode(self.encoded))
+        print()
         logits = self.llm.get_logits_from_input_ids(self.encoded)
         if len(logits) == 0:
             raise ValueError("Error: No tokens were found")
-        output = self.llm.decode(self.encoded_output)
-        print(f"current output '{output}'")
-        cor_logits = self.const_decode.correct_logits(logits, output)
+        print(f"current output '{self.output}'")
+        cor_logits = self.const_decode.correct_logits(logits, self.output)
         if cor_logits is None:
             return -1
         best_token_id = int(np.argmax(cor_logits))
         return best_token_id
 
-    def prompt_process(self) -> None:
+    def prompt_process(self, prompt: str) -> None:
         """
         For each prompt in file it sends the prompt to the necessary functions
         so that it may be encoded, tokenised, logitised and produce the
         desired json output for each prompt to write to the output file.
         """
-        encoded_gen = self.encode_text_gen()
-        self.encoded = next(encoded_gen)
         i = 0
         while True:
+            if not self.output or "," in self.llm.decode(next_token_id):
+                self.encode_text_gen(prompt)
             print("Choosing next token round:", i)
             next_token_id = self.token_selection()
             if next_token_id == -1:
                 break
-            self.encoded.append(next_token_id)
             print(f"LLM has chosen: '{self.llm.decode(next_token_id)}'")
-            self.encoded_output.append(next_token_id)
+            self.encoded.append(next_token_id)
+            self.output += self.llm.decode(next_token_id)
             i += 1
             if i == 40:
                 break
         print("\nLLM response:")
-        print(f"'{self.llm.decode(self.encoded_output)}'")
+        print(f"'{self.output}'")
+
+    def all_prompt_process(self) -> None:
+        print("\nProcessing all prompts")
+        for prompt in self.prompts:
+            self.const_decode.update_prompt(prompt)
+            self.prompt_process(prompt)
