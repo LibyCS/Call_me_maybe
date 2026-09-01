@@ -75,7 +75,7 @@ class EngeneerTextFormat():
                         "', \"parameters\": {\"(parameter key)\":"
                         " \"(parameter value)\",...}'")
         function_des = (func.name + self.llm_parameters(func) + "\n"
-                    + func.description)
+                        + func.description)
         return llm_request + self.user_prompt.replace("text", prompt) + function_des
 
 
@@ -90,9 +90,9 @@ class ConstrainedDecoding():
         self.token_dict = token_dictionary
         self.prompt: str = ""
         self.output: str = ""
+        self.chosen_func: (FunctonDefinition | None) = None
         self.prediction: str = "{"
         self.prdedicition_construction()
-        self.param_mode = False
 
     def prdedicition_construction(self) -> None:
         self.prediction += f'{Key.PROMPT}<name>'
@@ -152,12 +152,17 @@ class ConstrainedDecoding():
 
     def check_func_name(self, output: str, func: (str | None) = None) -> bool:
         if func is None:
-            for func in self.functions:
-                if output.find(func) != -1:
+            print("Searching output for func name")
+            for single_func in self.functions:
+                if output.find('"' + single_func.name + '"') != -1:
                     return True
             return False
         if Key.NAME in output:
+            print("Updating output")
             output = output[output.find(Key.NAME) + len(Key.NAME):]
+            output.remove(",")
+        print("checking diff between", output, "vs", func)
+        print(self.find_diff_in_words(output, func))
         if not self.find_diff_in_words(output, func):
             return True
         return False
@@ -177,17 +182,26 @@ class ConstrainedDecoding():
             return False
         return True
 
-    def find_valid_function_token_ids(self) -> list[int]:
+    def find_valid_function_token_ids(self, output: str) -> list[int]:
         valid_tokens: list[str] = []
         valid_funcs: list[str] = []
+        print(output)
+        if Key.NAME not in output:
+            print("Not name in output leaving")
+            return
         output = output[output.find(Key.NAME) + len(Key.NAME):]
+        print("output is:", output)
         for func in self.functions:
-            if self.check_func_name(self.output, func) is True:
-                valid_funcs.append(func)
+            func_name = '"' + func.name + '"'
+            if self.check_func_name(output, func_name) is True:
+                print("adding a function")
+                valid_funcs.append(func_name)
+        print("valid funcs", valid_funcs)
         for func in valid_funcs:
-            bucket = self.find_diff_in_words(func, self.output)
+            bucket = self.find_diff_in_words(func, output)
             for token in self.token_dict[bucket]:
-                if not self.find_diff_in_words(token, self.output):
+                if not self.find_diff_in_words(output + token, func):
+                    print("adding token", token)
                     valid_tokens.append(token)
         return self.convert_token_to_id(valid_tokens)
     
@@ -205,15 +219,13 @@ class ConstrainedDecoding():
         print([token for token in valid_tokens])
         return self.convert_token_to_id(valid_tokens)
 
-    def find_bucket(self, output: str) -> tuple[str]:
+    def find_stage(self, output: str) -> tuple[str]:
         if Key.PROMPT not in output:
             self.output = output
             print("Could not find prompt")
             return (self.find_diff_in_words(Key.PROMPT, output), Key.PROMPT)
         elif self.prompt not in output:
-            print("before", output)
             self.output = output[output.find(Key.PROMPT) + len(Key.PROMPT):]
-            print("after", self.output)
             if self.output.count('"') < 2 and len(self.output) > len(self.prompt):
                 raise ValueError("Error: LLM could not produce the right "
                                  "prompt")
@@ -221,20 +233,37 @@ class ConstrainedDecoding():
             return (self.find_diff_in_words(self.prompt, self.output), self.prompt)
         elif Key.NAME not in output:
             print("Could not find name")
-            self.output = self.output[len(self.prompt):]
-            print(output)
+            print(self.output)
+            self.output = output[output.find(self.prompt) + len(self.prompt):]
+            print("Output is: ", self.output)
             return (self.find_diff_in_words(Key.NAME, self.output), Key.NAME)
-        elif self.check_func_name():
-            return ("", "<Function>")
-        elif Key.PARAM not in output:
-            return
+        elif Key.NAME in output and self.chosen_func is None:
+            print("checking for func names")
+            self.output = output[output.find(Key.NAME) + len(Key.NAME):]
+            if not self.check_func_name(self.output):
+                return ("", "<Function>")
+            for func in self.functions:
+                if self.check_func_name(self.output, '"' + func.name + '"'):
+                    print("found func", func.name)
+                    self.chosen_func = func
+        if Key.PARAM not in output:
+            print("Searching for Parameter")
+            if self.chosen_func is None:
+                raise ValueError("Error: Could not find function")
+            chosen_func_name = '"' + self.chosen_func.name + '"'
+            self.output = output[output.find(chosen_func_name)
+                                 + len(chosen_func_name):]
+            return (self.find_diff_in_words(Key.PARAM, self.output), Key.PARAM)
+        else:
+            print("Searching for paramas")
 
     def correct_logits(self, logits: list[float], cur_output: str) -> (list[float] | None):
         print("\nNew logits:")
         print(self.prediction)
-        bucket, compare = self.find_bucket(cur_output.replace(" ", "Ġ"))
+        cur_output = cur_output.replace(" ", "Ġ")
+        bucket, compare = self.find_stage(cur_output)
         if compare == "<Function>":
-            valid_token_ids = self.find_valid_function_token_ids()
+            valid_token_ids = self.find_valid_function_token_ids(cur_output)
         else:
             valid_token_ids = self.find_valid_token_ids_in_bucket(bucket, compare)
         if valid_token_ids is None:
@@ -289,10 +318,15 @@ class LLMProcessing():
               print("Function request:")
               request = self.eng_text.functions_format(prompt)
         else:
+            print(self.output)
             for func in self.functions:
-                if self.const_decode.check_func_name(self.output, func.name):
+                func_name = '"' + func.name + '"'
+                output = self.output.replace(" ", "Ġ")
+                if self.const_decode.check_func_name(output, func_name):
                     self.cur_function = func
             print("Params request")
+            if self.cur_function is None:
+                raise ValueError("Error: Could not find the correct function")
             request = self.eng_text.params_format(prompt, self.cur_function)
         if request:
             self.encoded = self.llm.encode(request).tolist()[0]
@@ -302,9 +336,6 @@ class LLMProcessing():
         """
         Chooses best token based off llm's probability and constrained decoding
         """
-        print()
-        print("encoded is:", self.llm.decode(self.encoded))
-        print()
         logits = self.llm.get_logits_from_input_ids(self.encoded)
         if len(logits) == 0:
             raise ValueError("Error: No tokens were found")
@@ -321,6 +352,7 @@ class LLMProcessing():
         so that it may be encoded, tokenised, logitised and produce the
         desired json output for each prompt to write to the output file.
         """
+        self.output = ""
         i = 0
         while True:
             if not self.output or "," in self.llm.decode(next_token_id):
@@ -328,6 +360,7 @@ class LLMProcessing():
             print("Choosing next token round:", i)
             next_token_id = self.token_selection()
             if next_token_id == -1:
+                print("End of llm")
                 break
             print(f"LLM has chosen: '{self.llm.decode(next_token_id)}'")
             self.encoded.append(next_token_id)
@@ -343,3 +376,4 @@ class LLMProcessing():
         for prompt in self.prompts:
             self.const_decode.update_prompt(prompt)
             self.prompt_process(prompt)
+            break
