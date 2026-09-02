@@ -29,7 +29,7 @@ class EngeneerTextFormat():
         """
         prompt_llm = ("I will provide you with a user prompt, and I want"
                      " it formatted as such: '\"prompt\": \"(user prompt)\",'"
-                     "where user prompt is replaced with the prompt given")
+                     "where user prompt is replaced with the prompt given.\n")
         return prompt_llm + self.user_prompt.replace("text", prompt)
 
     def llm_parameters(self, func: FunctonDefinition) -> str:
@@ -73,7 +73,8 @@ class EngeneerTextFormat():
                        " and parameters to make a formated json paramater"
                        " as shown below:"
                         "', \"parameters\": {\"(parameter key)\":"
-                        " \"(parameter value)\",...}'")
+                        " \"(parameter value)\",...}' You only need \" if "
+                        "the parameter value is a string.\n")
         function_des = (func.name + self.llm_parameters(func) + "\n"
                         + func.description)
         return llm_request + self.user_prompt.replace("text", prompt) + function_des
@@ -89,26 +90,17 @@ class ConstrainedDecoding():
         self.functions: list[FunctonDefinition] = functions
         self.token_dict = token_dictionary
         self.prompt: str = ""
-        self.output: str = ""
         self.chosen_func: (FunctonDefinition | None) = None
-        self.prediction: str = "{"
-        self.prdedicition_construction()
-
-    def prdedicition_construction(self) -> None:
-        self.prediction += f'{Key.PROMPT}<name>'
-        self.prediction += f'{Key.NAME}<function>'
-        self.prediction += f'{Key.PARAM}<parameters>' + '}'
-        self.prediction = self.prediction.replace(" ", "Ġ")
-        print(self.prediction)
+        self.params: str = ""
+        self.output: str = ""
 
     def update_prompt(self, prompt: str) -> None:
         print("updating prompt")
         self.prompt = '"' + prompt.replace(" ", "Ġ") + '"'
-        self.prediction = self.prediction.replace("<name>", self.prompt)
-        print(self.prediction)
 
-    def update_paramaters(self, func: FunctonDefinition) -> None:
-        parameter = func.parameters
+    def update_params(self) -> None:
+        print("updating params")
+        parameter = self.chosen_func.parameters
         param_str = "{"
         index = 0
         for variable in parameter.keys():
@@ -118,7 +110,8 @@ class ConstrainedDecoding():
             if index != len(parameter.keys()):
                 param_str += ", "
         param_str += "}"
-        self.prediction = self.prediction.replace("<parameter>", param_str)
+        self.params = param_str.replace(" ", "Ġ")
+        print(self.params)
 
     def set_invalids_to_infinity(self, logits: list[float],
                                  valid_token_ids: list[int]) -> list[float]:
@@ -160,27 +153,109 @@ class ConstrainedDecoding():
         if Key.NAME in output:
             print("Updating output")
             output = output[output.find(Key.NAME) + len(Key.NAME):]
-            output.remove(",")
         print("checking diff between", output, "vs", func)
         print(self.find_diff_in_words(output, func))
         if not self.find_diff_in_words(output, func):
             return True
         return False
 
-    def find_type(self, value: str, ch_type: type) -> bool:
-        if ch_type == "<number>":
-            func = float
-        elif ch_type == "<string>":
-            func = str
-        elif ch_type == "<boolean>":
-            func = bool
+    def check_var_value(self, output: str) -> bool:
+        print("Checking_var_value")
+        variables = [output]
+        white_space_chars = ["'", "\"", "\\", "Ġ", "?", ",",
+                             ":", "]", ")", "}", ">", "/"]
+        if "," in output:
+            variables = list(output.split(","))
+        index = 0
+        for var in variables:
+            if ":" not in var:
+                return False
+            else:
+                _, variables[index] = var.split(":")
+                output.replace(variables[index], "")
+            index += 1
+        instance = self.prompt.find(variables[index - 1])
+        if (self.prompt[instance + len(variables[index - 1])]
+           in white_space_chars) and variables[index - 1] != "Ġ":
+            print("The var value is ", variables[index - 1])
+            print("Passes all checks will return true to finding the end of value")
+            return True
+        return False
+
+    def find_valid_param_token_ids(self, output: str) -> list[int]:
+        if not self.params:
+            self.update_params()
+        print("Finding params")
+        output = output[output.find(Key.PARAM) + len(Key.PARAM):]
+        bucket = self.find_diff_in_words(self.params, output)
+        valid_buckets: list[str] = []
+        print("Bucket is ", bucket)
+        if bucket == "<":
+            start = self.params.find("<")
+            end = self.params.find(">")
+            var_type = self.params[start + 1: end]
+            if self.check_var_value(output):
+                print("found the end")
+                print("cur_output is", output, "new index at", start)
+                var_value = output[start:]
+                print("New value is", var_value)
+                valid_buckets = [",", "}"]
+                if var_type == "number" and "." not in output[start:]:
+                    var_value = output[start:] + ".0"
+                    valid_buckets = ["."]
+                print("old params is", self.params)
+                self.params = self.params.replace(self.params[start: end + 1],
+                                                  var_value, 1)
+                print("new_params is", self.params)
+                if var_type == "string":
+                    valid_buckets.append('"')
+            if var_type == "string":
+                valid_buckets = ['"']
+            for bucket in self.token_dict.keys():
+                if bucket not in self.prompt:
+                    continue
+                print(var_type)
+                try:
+                    if var_type == "inteager":
+                        int(bucket)
+                        valid_buckets.append(bucket)
+                    elif var_type == "number":
+                        float(bucket)
+                        valid_buckets.append(bucket)
+                    elif var_type == "bool":
+                        valid_buckets = ["T", "F"]
+                    elif var_type == "string":
+                        valid_buckets.append(bucket)
+                except ValueError:
+                    continue
         else:
-            func = int
-        try:
-            func(value)
-        except ValueError:
-            return False
-        return True
+            print("adding bucket", bucket)
+            valid_buckets.append(bucket)
+        print("current valid bucket is ", valid_buckets)
+        valid_tokens: list[str] = []
+        variables = [output[1:]]
+        if "," in output:
+            variables = list(output[1:].split(","))
+        mode = "key"
+        print(variables[-1])
+        if (":Ġ" in variables[-1] and "," not in valid_buckets
+           and "}" not in valid_buckets):
+            print(variables[-1])
+            print("mode in value now")
+            mode = "value"
+        for tokens in valid_buckets:
+            for token in self.token_dict[tokens]:
+                if (mode == "value" and 
+                   (token in self.prompt or token in ".0")):
+                    valid_tokens.append(token)
+                elif (mode == "key"
+                     and not self.find_diff_in_words(output + token, self.params)):
+                    print("in here")
+                    if "<" not in token:
+                        print("token getting added", token)
+                        valid_tokens.append(token)
+        print("valid tokens:", valid_tokens)
+        return self.convert_token_to_id(valid_tokens)
 
     def find_valid_function_token_ids(self, output: str) -> list[int]:
         valid_tokens: list[str] = []
@@ -241,12 +316,14 @@ class ConstrainedDecoding():
             print("checking for func names")
             self.output = output[output.find(Key.NAME) + len(Key.NAME):]
             if not self.check_func_name(self.output):
+                print("Couldnt find function")
                 return ("", "<Function>")
             for func in self.functions:
                 if self.check_func_name(self.output, '"' + func.name + '"'):
                     print("found func", func.name)
                     self.chosen_func = func
         if Key.PARAM not in output:
+            print(self.chosen_func)
             print("Searching for Parameter")
             if self.chosen_func is None:
                 raise ValueError("Error: Could not find function")
@@ -255,15 +332,16 @@ class ConstrainedDecoding():
                                  + len(chosen_func_name):]
             return (self.find_diff_in_words(Key.PARAM, self.output), Key.PARAM)
         else:
-            print("Searching for paramas")
+            return("", "<Parameter>")
 
     def correct_logits(self, logits: list[float], cur_output: str) -> (list[float] | None):
         print("\nNew logits:")
-        print(self.prediction)
         cur_output = cur_output.replace(" ", "Ġ")
         bucket, compare = self.find_stage(cur_output)
         if compare == "<Function>":
             valid_token_ids = self.find_valid_function_token_ids(cur_output)
+        elif compare == "<Parameter>":
+            valid_token_ids = self.find_valid_param_token_ids(cur_output)
         else:
             valid_token_ids = self.find_valid_token_ids_in_bucket(bucket, compare)
         if valid_token_ids is None:
@@ -291,7 +369,7 @@ class LLMProcessing():
         self.eng_text = EngeneerTextFormat(functions)
         self.encoded: list[int] = []
         self.output: str = ""
-        self.cur_function : (FunctonDefinition | None) = None
+        self.mode = "prompt"
 
     def create_token_to_token_id_dict(self) -> None:
         """
@@ -317,17 +395,22 @@ class LLMProcessing():
              or not self.const_decode.check_func_name(self.output)):
               print("Function request:")
               request = self.eng_text.functions_format(prompt)
+              self.mode = "function"
         else:
+            print("Sending ")
             print(self.output)
+            cur_func: (FunctonDefinition | None) = None
             for func in self.functions:
                 func_name = '"' + func.name + '"'
                 output = self.output.replace(" ", "Ġ")
+                output = output[: -1]
                 if self.const_decode.check_func_name(output, func_name):
-                    self.cur_function = func
+                    cur_function = func
             print("Params request")
-            if self.cur_function is None:
+            if cur_function is None:
                 raise ValueError("Error: Could not find the correct function")
-            request = self.eng_text.params_format(prompt, self.cur_function)
+            request = self.eng_text.params_format(prompt, cur_function)
+            self.mode = "param"
         if request:
             self.encoded = self.llm.encode(request).tolist()[0]
             self.encoded += self.llm.encode(self.output).tolist()[0]
@@ -353,11 +436,15 @@ class LLMProcessing():
         desired json output for each prompt to write to the output file.
         """
         self.output = ""
-        i = 0
+        self.mode = "prompt"
+        self.const_decode.chosen_func = None
+        self.const_decode.params = ""
         while True:
-            if not self.output or "," in self.llm.decode(next_token_id):
+            if (not self.output or "," in self.llm.decode(next_token_id)
+               and self.mode != "param"):
                 self.encode_text_gen(prompt)
-            print("Choosing next token round:", i)
+                if self.output and "," in self.llm.decode(next_token_id):
+                    print(self.llm.decode(next_token_id))
             next_token_id = self.token_selection()
             if next_token_id == -1:
                 print("End of llm")
@@ -365,15 +452,20 @@ class LLMProcessing():
             print(f"LLM has chosen: '{self.llm.decode(next_token_id)}'")
             self.encoded.append(next_token_id)
             self.output += self.llm.decode(next_token_id)
-            i += 1
-            if i == 40:
+            print("End output:", self.output)
+            if (Key.PARAM.replace("Ġ", " ") in self.output
+               and self.output.find("{") != -1 and self.output.find("}") != -1):
                 break
         print("\nLLM response:")
         print(f"'{self.output}'")
 
     def all_prompt_process(self) -> None:
         print("\nProcessing all prompts")
-        for prompt in self.prompts:
+        index = 0
+        for prompt in self.prompts[1:]:
+            print("User Prompt:", prompt)
             self.const_decode.update_prompt(prompt)
             self.prompt_process(prompt)
-            break
+            index += 1
+            if index == 2:
+                break

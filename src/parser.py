@@ -100,11 +100,7 @@ def load_definition(filename: str) -> list[FunctonDefinition]:
             function_defs.append(new_function)
         except ValidationError as message:
             for error in message.errors():
-                print(f"Error in {filename}:")
                 raise ValueError(f"Error: {error["msg"]}")
-    for i in function_defs:
-        print("name:", i.name, "\ndescription:", i.description, "\nparameters",
-              i.parameters, "\nreturns", i.returns.type)
     return function_defs
 
 def load_prompts(filename: str) -> list[str]:
@@ -116,5 +112,4 @@ def load_prompts(filename: str) -> list[str]:
     prompts: list[str] = []
     for prompt in data:
         prompts = prompts + list(prompt.values())
-    print(prompts)
     return prompts
