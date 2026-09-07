@@ -162,8 +162,11 @@ class ConstrainedDecoding():
     def check_var_value(self, output: str) -> bool:
         print("Checking_var_value")
         variables = [output]
-        white_space_chars = ["'", "\"", "\\", "Ġ", "?", ",",
+        white_space_chars = ["'", "\\", "?", ",",
                              ":", "]", ")", "}", ">", "/"]
+        var_type = self.params[self.params.find("<") + 1: self.params.find(">")]
+        if var_type != "string":
+            white_space_chars.append("Ġ")
         if "," in output:
             variables = list(output.split(","))
         index = 0
@@ -174,6 +177,8 @@ class ConstrainedDecoding():
                 _, variables[index] = var.split(":")
                 output.replace(variables[index], "")
             index += 1
+        if variables[index - 1][-1] == '"':
+            return True
         instance = self.prompt.find(variables[index - 1])
         if (self.prompt[instance + len(variables[index - 1])]
            in white_space_chars) and variables[index - 1] != "Ġ":
@@ -182,7 +187,7 @@ class ConstrainedDecoding():
             return True
         return False
 
-    def find_valid_param_token_ids(self, output: str) -> list[int]:
+    def find_valid_param_buckets(self, output: str) -> list[int]:
         if not self.params:
             self.update_params()
         print("Finding params")
@@ -207,31 +212,33 @@ class ConstrainedDecoding():
                 self.params = self.params.replace(self.params[start: end + 1],
                                                   var_value, 1)
                 print("new_params is", self.params)
-                if var_type == "string":
-                    valid_buckets.append('"')
-            if var_type == "string":
+            elif var_type == "string":
                 valid_buckets = ['"']
             for bucket in self.token_dict.keys():
                 if bucket not in self.prompt:
                     continue
                 print(var_type)
                 try:
-                    if var_type == "inteager":
+                    if var_type == "integer":
                         int(bucket)
                         valid_buckets.append(bucket)
                     elif var_type == "number":
                         float(bucket)
                         valid_buckets.append(bucket)
-                    elif var_type == "bool":
+                    elif var_type == "boolean":
                         valid_buckets = ["T", "F"]
                     elif var_type == "string":
-                        valid_buckets.append(bucket)
+                        if not (bucket == "Ġ" and output[-1] == "Ġ"):
+                            valid_buckets.append(bucket)
                 except ValueError:
                     continue
         else:
             print("adding bucket", bucket)
             valid_buckets.append(bucket)
         print("current valid bucket is ", valid_buckets)
+        return self.find_valid_ids_for_params(valid_buckets, output)
+
+    def find_valid_ids_for_params(self, valid_buckets: list[str], output: str) -> list[int]:
         valid_tokens: list[str] = []
         variables = [output[1:]]
         if "," in output:
@@ -341,7 +348,7 @@ class ConstrainedDecoding():
         if compare == "<Function>":
             valid_token_ids = self.find_valid_function_token_ids(cur_output)
         elif compare == "<Parameter>":
-            valid_token_ids = self.find_valid_param_token_ids(cur_output)
+            valid_token_ids = self.find_valid_param_buckets(cur_output)
         else:
             valid_token_ids = self.find_valid_token_ids_in_bucket(bucket, compare)
         if valid_token_ids is None:
@@ -462,10 +469,10 @@ class LLMProcessing():
     def all_prompt_process(self) -> None:
         print("\nProcessing all prompts")
         index = 0
-        for prompt in self.prompts[1:]:
+        for prompt in self.prompts[2:]:
             print("User Prompt:", prompt)
             self.const_decode.update_prompt(prompt)
             self.prompt_process(prompt)
             index += 1
-            if index == 2:
+            if index == 1:
                 break
