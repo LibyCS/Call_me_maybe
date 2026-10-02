@@ -6,6 +6,12 @@ import json
 import sys
 from enum import StrEnum
 
+class Variable():
+    index: int = 0
+    var_index: int = -1
+    var: str = ""
+    type: str = ""
+
 class Key(StrEnum):
     PROMPT = '"prompt":Ġ'
     NAME = ',Ġ"name":Ġ'
@@ -69,12 +75,13 @@ class EngeneerTextFormat():
         """
         Asks the llm to return the appropriate parameters.
         """
-        llm_request = ("Please use the prompt and the function definition"
-                       " and parameters to make a formated json paramater"
-                       " as shown below:"
-                        "', \"parameters\": {\"(parameter key)\":"
-                        " \"(parameter value)\",...}' You only need \" if "
-                        "the parameter value is a string.\n")
+        llm_request = ("Extract only the parameter values required by the function.\n"
+                       "Do not include command words such as greet or reverse.\n"
+                       "Return only this format:\n"
+                       "', \"parameters\": {\"parameter\": value}'\n"
+                       "Examples:\n"
+                       "Prompt: greet Shrek\n"
+                       "Output: ', \"parameters\": {\"name\": \"Shrek\"}'\n")
         function_des = (func.name + self.llm_parameters(func) + "\n"
                         + func.description)
         return llm_request + self.user_prompt.replace("text", prompt) + function_des
@@ -89,29 +96,66 @@ class ConstrainedDecoding():
                  functions: list[FunctonDefinition]) -> None:
         self.functions: list[FunctonDefinition] = functions
         self.token_dict = token_dictionary
+        self.makes()
+
+    def makes(self) -> None:
+        """
+        makes resetabble vars for Constrained Decoding
+        """
         self.prompt: str = ""
         self.chosen_func: (FunctonDefinition | None) = None
-        self.params: str = ""
+        self.cur_var: Variable = Variable()
         self.output: str = ""
 
-    def update_prompt(self, prompt: str) -> None:
-        print("updating prompt")
-        self.prompt = '"' + prompt.replace(" ", "Ġ") + '"'
+    def update_prompt(self, prompt: (str | None) = None) -> None:
+        if prompt:
+            print("updating prompt")
+            self.prompt = json.dumps(prompt).replace(" ", "Ġ")
+            print("Updated prompt:", self.prompt)
+        mode = False
+        if self.chosen_func:
+            print("Found chosen func")
+            for var in self.chosen_func.parameters.keys():
+                if self.chosen_func.parameters[var].type == "number":
+                    mode = True
+        if mode is True:
+            print("Found numbers")
+            numbers: list[str] = []
+            number = ""
+            for index in range(0, len(self.prompt)):
+                try:
+                    if self.prompt[index] != ".":
+                        int(self.prompt[index])
+                    number += self.prompt[index]
+                except:
+                    if number and "." not in number:
+                        numbers.append(number)
+                        number = ""
+                        index += 2
+                    continue
+            for number in numbers:
+                print(number, number + ".0")
+                self.prompt = self.prompt.replace(number, number + ".0")
+            print(self.prompt)
+            print("Updated to account number for prompt", self.prompt)
 
-    def update_params(self) -> None:
-        print("updating params")
-        parameter = self.chosen_func.parameters
-        param_str = "{"
-        index = 0
-        for variable in parameter.keys():
-            param_str += '"' + variable + '": '
-            param_str += "<" + parameter[variable].type + ">"
-            index += 1
-            if index != len(parameter.keys()):
-                param_str += ", "
-        param_str += "}"
-        self.params = param_str.replace(" ", "Ġ")
-        print(self.params)
+    def update_current_var(self, output: str) -> bool:
+        print("updating cur var")
+        self.cur_var.var_index += 1
+        all_params = list(self.chosen_func.parameters.keys())
+        if self.cur_var.var_index >= len(all_params):
+            print("Failed")
+            return False
+        self.cur_var.index = len(output)
+        if self.cur_var.var_index != 0:
+            self.cur_var.index -= 1
+        new_var = all_params[self.cur_var.var_index]
+        self.cur_var.var = '"' + new_var + '":Ġ'
+        if self.cur_var.var_index != 0:
+            self.cur_var.var = "Ġ" + self.cur_var.var
+        self.cur_var.type = self.chosen_func.parameters[new_var].type
+        print("succeded")
+        return True
 
     def set_invalids_to_infinity(self, logits: list[float],
                                  valid_token_ids: list[int]) -> list[float]:
@@ -160,109 +204,148 @@ class ConstrainedDecoding():
         return False
 
     def check_var_value(self, output: str) -> bool:
-        print("Checking_var_value")
-        variables = [output]
-        white_space_chars = ["'", "\\", "?", ",",
-                             ":", "]", ")", "}", ">", "/"]
-        var_type = self.params[self.params.find("<") + 1: self.params.find(">")]
-        if var_type != "string":
-            white_space_chars.append("Ġ")
-        if "," in output:
-            variables = list(output.split(","))
-        index = 0
-        for var in variables:
-            if ":" not in var:
+        print("Checking var value")
+        print(output, "vs", self.prompt)
+        output = output[len(self.cur_var.var):]
+        print(f"Searching for finished value in '{output}'", self.cur_var.index)
+        if output == "":
+            return False
+        if self.cur_var.type == "string":
+            if output.count('"') < 2:
                 return False
-            else:
-                _, variables[index] = var.split(":")
-                output.replace(variables[index], "")
-            index += 1
-        if variables[index - 1][-1] == '"':
-            return True
-        instance = self.prompt.find(variables[index - 1])
-        if (self.prompt[instance + len(variables[index - 1])]
-           in white_space_chars) and variables[index - 1] != "Ġ":
-            print("The var value is ", variables[index - 1])
-            print("Passes all checks will return true to finding the end of value")
-            return True
+            index = output.rfind('"')
+            mode = True
+            while True:
+                cur_character = output[index - 1]
+                if cur_character == "\\":
+                    if mode is True:
+                        mode = False
+                    else:
+                        mode = True
+                    index -= 1
+                    if index == 0:
+                        break
+                else:
+                    break
+            return mode
+        elif self.cur_var.type == "integer":
+            index = self.prompt.find(output)
+            if index == len(self.prompt) - 1:
+                return True
+            if index == -1:
+                raise ValueError("Error: Parameter is the wrong value")
+            try:
+                int(self.prompt[index + len(output)])
+                return False
+            except ValueError:
+                return True
+        elif self.cur_var.type == "number":
+            if "." not in output or output[-1] == ".":
+                return False
+            index = self.prompt.find(output) + len(output)
+            print("Found value in", self.prompt[index:])
+            if index == len(output) - 1:
+                print("At the end of output all true")
+                return True
+            if index == -1:
+                raise ValueError("Error: Parameter is the wrong value")
+            try:
+                int(self.prompt[index + 1])
+                print(f"'{self.prompt[index + 1]}' is an int")
+                print("more ints to be found")
+                return False
+            except (ValueError, IndexError):
+                print("found all ints")
+                return True
+        elif self.cur_var.type == "boolean":
+            if output == "true" or output == "false":
+                return True
+            return False
         return False
 
-    def find_valid_param_buckets(self, output: str) -> list[int]:
-        if not self.params:
-            self.update_params()
-        print("Finding params")
-        output = output[output.find(Key.PARAM) + len(Key.PARAM):]
-        bucket = self.find_diff_in_words(self.params, output)
-        valid_buckets: list[str] = []
-        print("Bucket is ", bucket)
-        if bucket == "<":
-            start = self.params.find("<")
-            end = self.params.find(">")
-            var_type = self.params[start + 1: end]
-            if self.check_var_value(output):
-                print("found the end")
-                print("cur_output is", output, "new index at", start)
-                var_value = output[start:]
-                print("New value is", var_value)
-                valid_buckets = [",", "}"]
-                if var_type == "number" and "." not in output[start:]:
-                    var_value = output[start:] + ".0"
-                    valid_buckets = ["."]
-                print("old params is", self.params)
-                self.params = self.params.replace(self.params[start: end + 1],
-                                                  var_value, 1)
-                print("new_params is", self.params)
-            elif var_type == "string":
-                valid_buckets = ['"']
-            for bucket in self.token_dict.keys():
-                if bucket not in self.prompt:
-                    continue
-                print(var_type)
-                try:
-                    if var_type == "integer":
-                        int(bucket)
-                        valid_buckets.append(bucket)
-                    elif var_type == "number":
-                        float(bucket)
-                        valid_buckets.append(bucket)
-                    elif var_type == "boolean":
-                        valid_buckets = ["T", "F"]
-                    elif var_type == "string":
-                        if not (bucket == "Ġ" and output[-1] == "Ġ"):
-                            valid_buckets.append(bucket)
-                except ValueError:
-                    continue
-        else:
-            print("adding bucket", bucket)
-            valid_buckets.append(bucket)
-        print("current valid bucket is ", valid_buckets)
-        return self.find_valid_ids_for_params(valid_buckets, output)
-
-    def find_valid_ids_for_params(self, valid_buckets: list[str], output: str) -> list[int]:
+    def find_params_value_buckets(self, output: str) -> list[int]:
         valid_tokens: list[str] = []
-        variables = [output[1:]]
-        if "," in output:
-            variables = list(output[1:].split(","))
-        mode = "key"
-        print(variables[-1])
-        if (":Ġ" in variables[-1] and "," not in valid_buckets
-           and "}" not in valid_buckets):
-            print(variables[-1])
-            print("mode in value now")
-            mode = "value"
-        for tokens in valid_buckets:
-            for token in self.token_dict[tokens]:
-                if (mode == "value" and 
-                   (token in self.prompt or token in ".0")):
-                    valid_tokens.append(token)
-                elif (mode == "key"
-                     and not self.find_diff_in_words(output + token, self.params)):
-                    print("in here")
-                    if "<" not in token:
-                        print("token getting added", token)
+        func = None
+        if self.cur_var.type == "string":
+            if len(output) == 0:
+                return self.convert_token_to_id(['"'])
+            elif len(output) > 1:
+                print(output)
+                valid_tokens.append('"')
+            print(output)
+            output = output[1:]
+        for bucket in self.token_dict.keys():
+            try:
+                if self.cur_var.type == "integer":
+                    int(bucket)
+                    func = int
+                elif self.cur_var.type == "number":
+                    if bucket != ".":
+                        float(bucket)
+                    func = float
+                elif self.cur_var.type == "boolean":
+                    if bucket != "t" or bucket != "f":
+                        raise ValueError
+            except ValueError:
+                 continue
+            for token in self.token_dict[bucket].keys():
+                if len(output) == 0 and token[0] == "Ġ":
+                    continue
+                try:
+                    if not func and self.cur_var.type == "boolean":
+                        if token == "true" or token == "false":
+                            valid_tokens.append(token)
+                    elif self.cur_var.type != "string":
+                        if token[0] == "." and "." not in output:
+                            valid_tokens.append(token)
+                            continue
+                        func(token)
+                        print(token)
+                    if output + token in self.prompt:
                         valid_tokens.append(token)
-        print("valid tokens:", valid_tokens)
+                except:
+                    continue
         return self.convert_token_to_id(valid_tokens)
+
+    def find_param_stage(self, output: str) -> list[int]:
+        print("Finding params stage")
+        output = output[output.find(Key.PARAM) + len(Key.PARAM):]
+        print(f"New output: '{output}'")
+        if not self.cur_var.var:
+            print("didnt find var")
+            if self.update_current_var(output) == False:
+                print("Cant update")
+                return []
+            else:
+                print(self.cur_var.var)
+        if not output:
+            print("Nothing in output")
+            return self.convert_token_to_id(["{"])
+        else:
+            print("something in output")
+        print("Passing starting stage")
+        if "{" == output[0]:
+            output = output[1:]
+        if self.cur_var.var_index != 0:
+            output = output[self.cur_var.index:]
+            print(f"current output is '{output}'")
+        diff = self.find_diff_in_words(self.cur_var.var, output)
+        if diff:
+            print("Found difference")
+            return self.convert_token_to_id([diff])
+        elif not self.check_var_value(output):
+            print("Finding param Value")
+            output = output[self.cur_var.index:]
+            output = output[len(self.cur_var.var):]
+            print("Sending in", output)
+            return self.find_params_value_buckets(output)
+        else:
+            print("Value is complete")
+            self.cur_var.var = None
+            if len(self.chosen_func.parameters) == self.cur_var.var_index + 1:
+                return self.convert_token_to_id(["}"])
+            print(len(self.chosen_func.parameters), self.cur_var.var_index + 1)
+            return self.convert_token_to_id([","])
 
     def find_valid_function_token_ids(self, output: str) -> list[int]:
         valid_tokens: list[str] = []
@@ -278,6 +361,7 @@ class ConstrainedDecoding():
             if self.check_func_name(output, func_name) is True:
                 print("adding a function")
                 valid_funcs.append(func_name)
+                
         print("valid funcs", valid_funcs)
         for func in valid_funcs:
             bucket = self.find_diff_in_words(func, output)
@@ -295,7 +379,7 @@ class ConstrainedDecoding():
         if bucket not in self.token_dict.keys():
             raise KeyError(f"Error: No '{bucket}' key in token_dictionary")
         for token in self.token_dict[bucket]:
-            if compare.find(self.output + token) != -1:
+            if compare.startswith(self.output + token):
                 valid_tokens.append(token)
         print("valid:")
         print([token for token in valid_tokens])
@@ -306,7 +390,7 @@ class ConstrainedDecoding():
             self.output = output
             print("Could not find prompt")
             return (self.find_diff_in_words(Key.PROMPT, output), Key.PROMPT)
-        elif self.prompt not in output:
+        elif self.prompt not in output and Key.NAME not in output:
             self.output = output[output.find(Key.PROMPT) + len(Key.PROMPT):]
             if self.output.count('"') < 2 and len(self.output) > len(self.prompt):
                 raise ValueError("Error: LLM could not produce the right "
@@ -329,6 +413,8 @@ class ConstrainedDecoding():
                 if self.check_func_name(self.output, '"' + func.name + '"'):
                     print("found func", func.name)
                     self.chosen_func = func
+                    self.update_prompt()
+                    break
         if Key.PARAM not in output:
             print(self.chosen_func)
             print("Searching for Parameter")
@@ -348,10 +434,10 @@ class ConstrainedDecoding():
         if compare == "<Function>":
             valid_token_ids = self.find_valid_function_token_ids(cur_output)
         elif compare == "<Parameter>":
-            valid_token_ids = self.find_valid_param_buckets(cur_output)
+            valid_token_ids = self.find_param_stage(cur_output)
         else:
             valid_token_ids = self.find_valid_token_ids_in_bucket(bucket, compare)
-        if valid_token_ids is None:
+        if not valid_token_ids:
             return None
         return self.set_invalids_to_infinity(logits, valid_token_ids)
 
@@ -469,10 +555,11 @@ class LLMProcessing():
     def all_prompt_process(self) -> None:
         print("\nProcessing all prompts")
         index = 0
-        for prompt in self.prompts[2:]:
+        for prompt in self.prompts[8:]:
+            print(len(self.prompts), "vs", index)
+            print("\n\n\nNEW PROMPT!!!!!\n\n\n", prompt)
             print("User Prompt:", prompt)
+            self.const_decode.makes()
             self.const_decode.update_prompt(prompt)
             self.prompt_process(prompt)
             index += 1
-            if index == 1:
-                break
